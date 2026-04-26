@@ -1,0 +1,845 @@
+// ═══════════════════════════════════════════════════════════════
+// PHONE MARKETPLACE — FULL BACKEND
+// Stack: Node.js + TypeScript | PostgreSQL/Supabase | Redis
+//        Socket.io | Stripe | Chargily | Claude AI
+// ═══════════════════════════════════════════════════════════════
+
+// ─────────────────────────────────────────────────────────────
+// 1. PRISMA SCHEMA  (schema.prisma)
+// ─────────────────────────────────────────────────────────────
+
+/*
+generator client {
+  provider = "prisma-client-js"
+}
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum UserRole       { BUYER SELLER ADMIN }
+enum UserStatus     { ACTIVE SUSPENDED PENDING_VERIFICATION }
+enum PhoneCondition { NEW LIKE_NEW GOOD FAIR POOR }
+enum ListingStatus  { DRAFT ACTIVE SOLD REMOVED UNDER_REVIEW }
+enum OrderStatus    { PENDING PAID IN_ESCROW SHIPPED DELIVERED DISPUTED REFUNDED CANCELLED }
+enum PaymentMethod  { STRIPE CHARGILY_CIB CHARGILY_GOLD }
+enum PaymentStatus  { PENDING CAPTURED FAILED REFUNDED }
+enum MessageStatus  { SENT DELIVERED READ }
+enum NotifType      { ORDER_UPDATE NEW_MESSAGE PRICE_DROP FRAUD_ALERT }
+
+model User {
+  id                String     @id @default(uuid())
+  phone             String     @unique
+  email             String?    @unique
+  fullName          String
+  role              UserRole   @default(BUYER)
+  status            UserStatus @default(PENDING_VERIFICATION)
+  trustScore        Float      @default(50.0)
+  isPhoneVerified   Boolean    @default(false)
+  isIdVerified      Boolean    @default(false)
+  wilaya            String?
+  refreshTokenHash  String?
+  createdAt         DateTime   @default(now())
+  updatedAt         DateTime   @updatedAt
+  listings          Listing[]
+  buyerOrders       Order[]    @relation("BuyerOrders")
+  sellerOrders      Order[]    @relation("SellerOrders")
+  sentMessages      Message[]  @relation("SentMessages")
+  receivedMessages  Message[]  @relation("ReceivedMessages")
+  reviewsReceived   Review[]   @relation("ReviewsReceived")
+  notifications     Notification[]
+  otpCodes          OtpCode[]
+  @@index([phone])
+  @@index([trustScore])
+}
+
+model OtpCode {
+  id        String   @id @default(uuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  code      String
+  purpose   String
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime @default(now())
+  @@index([userId])
+}
+
+model PhoneModel {
+  id             String   @id @default(uuid())
+  brand          String
+  model          String
+  slug           String   @unique
+  displayInches  Float?
+  chipset        String?
+  ramOptions     Int[]
+  storageOptions Int[]
+  mainCameraMP   Int?
+  batteryMah     Int?
+  releaseYear    Int?
+  colors         String[]
+  fullSpecsJson  Json?
+  imageUrl       String?
+  createdAt      DateTime @default(now())
+  listings       Listing[]
+  @@index([brand])
+  @@index([slug])
+}
+
+model Listing {
+  id            String         @id @default(uuid())
+  sellerId      String
+  seller        User           @relation(fields: [sellerId], references: [id])
+  phoneModelId  String
+  phoneModel    PhoneModel     @relation(fields: [phoneModelId], references: [id])
+  title         String
+  description   String?
+  condition     PhoneCondition
+  status        ListingStatus  @default(DRAFT)
+  priceAmount   Int
+  priceCurrency String         @default("DZD")
+  negotiable    Boolean        @default(true)
+  storageGb     Int?
+  ramGb         Int?
+  wilaya        String?
+  canShip       Boolean        @default(false)
+  aiVerified    Boolean        @default(false)
+  aiFraudScore  Float?
+  viewCount     Int            @default(0)
+  publishedAt   DateTime?
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
+  images        ListingImage[]
+  orders        Order[]
+  chatThreads   ChatThread[]
+  @@index([sellerId])
+  @@index([status, wilaya])
+  @@index([priceAmount])
+}
+
+model ListingImage {
+  id         String   @id @default(uuid())
+  listingId  String
+  listing    Listing  @relation(fields: [listingId], references: [id], onDelete: Cascade)
+  url        String
+  isPrimary  Boolean  @default(false)
+  aiTagsJson Json?
+  createdAt  DateTime @default(now())
+  @@index([listingId])
+}
+
+model Order {
+  id           String      @id @default(uuid())
+  buyerId      String
+  buyer        User        @relation("BuyerOrders",  fields: [buyerId],  references: [id])
+  sellerId     String
+  seller       User        @relation("SellerOrders", fields: [sellerId], references: [id])
+  listingId    String
+  listing      Listing     @relation(fields: [listingId], references: [id])
+  status       OrderStatus @default(PENDING)
+  amountPaid   Int
+  currency     String      @default("DZD")
+  platformFee  Int
+  shippedAt    DateTime?
+  deliveredAt  DateTime?
+  escrowReleasedAt DateTime?
+  createdAt    DateTime    @default(now())
+  updatedAt    DateTime    @updatedAt
+  payments     Payment[]
+  review       Review?
+  @@index([buyerId])
+  @@index([sellerId])
+  @@index([status])
+}
+
+model Payment {
+  id                      String        @id @default(uuid())
+  orderId                 String
+  order                   Order         @relation(fields: [orderId], references: [id])
+  method                  PaymentMethod
+  status                  PaymentStatus @default(PENDING)
+  amountRequested         Int
+  amountCaptured          Int?
+  currency                String        @default("DZD")
+  stripePaymentIntentId   String?       @unique
+  chargilyCheckoutId      String?       @unique
+  gatewayRawResponse      Json?
+  capturedAt              DateTime?
+  createdAt               DateTime      @default(now())
+  @@index([orderId])
+}
+
+model ChatThread {
+  id        String    @id @default(uuid())
+  listingId String
+  listing   Listing   @relation(fields: [listingId], references: [id])
+  buyerId   String
+  sellerId  String
+  lastMsgAt DateTime?
+  createdAt DateTime  @default(now())
+  messages  Message[]
+  @@unique([listingId, buyerId])
+  @@index([sellerId])
+  @@index([buyerId])
+}
+
+model Message {
+  id          String        @id @default(uuid())
+  threadId    String
+  thread      ChatThread    @relation(fields: [threadId], references: [id], onDelete: Cascade)
+  senderId    String
+  sender      User          @relation("SentMessages",     fields: [senderId],    references: [id])
+  receiverId  String
+  receiver    User          @relation("ReceivedMessages", fields: [receiverId],  references: [id])
+  body        String
+  mediaUrl    String?
+  status      MessageStatus @default(SENT)
+  sentAt      DateTime      @default(now())
+  readAt      DateTime?
+  @@index([threadId])
+}
+
+model Review {
+  id         String   @id @default(uuid())
+  orderId    String   @unique
+  order      Order    @relation(fields: [orderId], references: [id])
+  reviewerId String
+  revieweeId String
+  reviewee   User     @relation("ReviewsReceived", fields: [revieweeId], references: [id])
+  rating     Int
+  comment    String?
+  createdAt  DateTime @default(now())
+  @@index([revieweeId])
+}
+
+model Notification {
+  id        String    @id @default(uuid())
+  userId    String
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  type      NotifType
+  title     String
+  body      String
+  dataJson  Json?
+  readAt    DateTime?
+  sentVia   String[]
+  createdAt DateTime  @default(now())
+  @@index([userId, readAt])
+}
+*/
+
+// ─────────────────────────────────────────────────────────────
+// 2. ENV  (.env)
+// ─────────────────────────────────────────────────────────────
+
+/*
+DATABASE_URL=postgresql://...
+REDIS_URL=redis://...
+JWT_SECRET=...
+JWT_EXPIRES_IN=15m
+REFRESH_TOKEN_EXPIRES_IN=30d
+STRIPE_SECRET_KEY=sk_live_...
+STRIPE_WEBHOOK_SECRET=whsec_...
+CHARGILY_SECRET_KEY=...
+ANTHROPIC_API_KEY=sk-ant-...
+APP_URL=https://yourdomain.com
+ALLOWED_ORIGINS=https://yourdomain.com,https://admin.yourdomain.com
+*/
+
+// ─────────────────────────────────────────────────────────────
+// 3. LIB — Prisma client singleton
+// ─────────────────────────────────────────────────────────────
+
+// lib/prisma.ts
+import { PrismaClient } from '@prisma/client'
+declare global { var __prisma: PrismaClient | undefined }
+export const prisma = global.__prisma ?? new PrismaClient({ log: ['error'] })
+if (process.env.NODE_ENV !== 'production') global.__prisma = prisma
+
+// ─────────────────────────────────────────────────────────────
+// 4. AUTH — JWT + OTP
+// ─────────────────────────────────────────────────────────────
+
+// lib/auth.ts
+import jwt from 'jsonwebtoken'
+import bcrypt from 'bcryptjs'
+import crypto from 'crypto'
+
+const SECRET = process.env.JWT_SECRET!
+
+export function signAccessToken(userId: string) {
+  return jwt.sign({ sub: userId }, SECRET, {
+    expiresIn: process.env.JWT_EXPIRES_IN ?? '15m',
+    jwtid: crypto.randomUUID(),
+  })
+}
+
+export function signRefreshToken(userId: string) {
+  const token = crypto.randomBytes(48).toString('hex')
+  return { token, hash: bcrypt.hashSync(token, 10) }
+}
+
+export function verifyJWT(token: string): { sub: string; jti: string } | null {
+  try { return jwt.verify(token, SECRET) as any }
+  catch { return null }
+}
+
+export function generateOTP() {
+  const code = String(crypto.randomInt(100000, 999999))
+  return { code, hash: bcrypt.hashSync(code, 10) }
+}
+
+export function verifyOTP(plain: string, hash: string) {
+  return bcrypt.compareSync(plain, hash)
+}
+
+// ─────────────────────────────────────────────────────────────
+// 5. AUTH ROUTES  (Express)
+// ─────────────────────────────────────────────────────────────
+
+// routes/auth.routes.ts
+import { Router, Request, Response } from 'express'
+
+const authRouter = Router()
+
+// POST /auth/request-otp
+authRouter.post('/request-otp', async (req: Request, res: Response) => {
+  const { phone } = req.body as { phone: string }
+  if (!phone) return res.status(400).json({ error: 'phone required' })
+
+  let user = await prisma.user.findUnique({ where: { phone } })
+  if (!user) user = await prisma.user.create({ data: { phone, fullName: '' } })
+
+  const { code, hash } = generateOTP()
+  await prisma.otpCode.create({
+    data: {
+      userId: user.id,
+      code: hash,
+      purpose: 'login',
+      expiresAt: new Date(Date.now() + 5 * 60 * 1000),
+    },
+  })
+
+  // TODO: send `code` via SMS (Twilio / local DZ provider)
+  console.log(`OTP for ${phone}: ${code}`)
+
+  res.json({ message: 'OTP sent' })
+})
+
+// POST /auth/verify-otp
+authRouter.post('/verify-otp', async (req: Request, res: Response) => {
+  const { phone, code } = req.body as { phone: string; code: string }
+
+  const user = await prisma.user.findUnique({ where: { phone } })
+  if (!user) return res.status(404).json({ error: 'user not found' })
+
+  const otp = await prisma.otpCode.findFirst({
+    where: { userId: user.id, purpose: 'login', usedAt: null, expiresAt: { gt: new Date() } },
+    orderBy: { createdAt: 'desc' },
+  })
+  if (!otp || !verifyOTP(code, otp.code))
+    return res.status(401).json({ error: 'invalid or expired OTP' })
+
+  await prisma.otpCode.update({ where: { id: otp.id }, data: { usedAt: new Date() } })
+  await prisma.user.update({ where: { id: user.id }, data: { isPhoneVerified: true } })
+
+  const accessToken  = signAccessToken(user.id)
+  const { token: refreshToken, hash } = signRefreshToken(user.id)
+  await prisma.user.update({ where: { id: user.id }, data: { refreshTokenHash: hash } })
+
+  res.json({ accessToken, refreshToken, user: { id: user.id, phone: user.phone, role: user.role } })
+})
+
+// POST /auth/refresh
+authRouter.post('/refresh', async (req: Request, res: Response) => {
+  const { refreshToken } = req.body as { refreshToken: string }
+  if (!refreshToken) return res.status(400).json({ error: 'token required' })
+
+  const users = await prisma.user.findMany({ where: { refreshTokenHash: { not: null } } })
+  const user  = users.find(u => bcrypt.compareSync(refreshToken, u.refreshTokenHash!))
+  if (!user) return res.status(401).json({ error: 'invalid token' })
+
+  const accessToken = signAccessToken(user.id)
+  const { token: newRefresh, hash } = signRefreshToken(user.id)
+  await prisma.user.update({ where: { id: user.id }, data: { refreshTokenHash: hash } })
+
+  res.json({ accessToken, refreshToken: newRefresh })
+})
+
+// ─────────────────────────────────────────────────────────────
+// 6. CATALOG — Auto-fill phone specs
+// ─────────────────────────────────────────────────────────────
+
+// routes/catalog.routes.ts
+const catalogRouter = Router()
+
+// GET /catalog/search?q=iPhone+15
+catalogRouter.get('/search', async (req: Request, res: Response) => {
+  const q = (req.query.q as string)?.trim()
+  if (!q) return res.json([])
+
+  const results = await prisma.phoneModel.findMany({
+    where: {
+      OR: [
+        { model: { contains: q, mode: 'insensitive' } },
+        { brand: { contains: q, mode: 'insensitive' } },
+      ],
+    },
+    take: 10,
+    select: { id: true, brand: true, model: true, slug: true,
+              ramOptions: true, storageOptions: true, colors: true, imageUrl: true },
+  })
+  res.json(results)
+})
+
+// GET /catalog/:slug  — full specs for auto-fill
+catalogRouter.get('/:slug', async (req: Request, res: Response) => {
+  const phone = await prisma.phoneModel.findUnique({ where: { slug: req.params.slug } })
+  if (!phone) return res.status(404).json({ error: 'not found' })
+  res.json(phone)
+})
+
+// ─────────────────────────────────────────────────────────────
+// 7. LISTINGS CRUD
+// ─────────────────────────────────────────────────────────────
+
+// routes/listings.routes.ts
+import { authMiddleware } from './middleware/auth.middleware'
+import { scanListingImages } from '../services/trust.service'
+
+const listingsRouter = Router()
+
+// GET /listings?wilaya=Oran&maxPrice=100000&condition=NEW
+listingsRouter.get('/', async (req: Request, res: Response) => {
+  const { wilaya, maxPrice, minPrice, condition, brand, page = '1' } = req.query as Record<string, string>
+  const PAGE_SIZE = 20
+
+  const listings = await prisma.listing.findMany({
+    where: {
+      status: 'ACTIVE',
+      ...(wilaya    && { wilaya }),
+      ...(condition && { condition: condition as any }),
+      ...(maxPrice  && { priceAmount: { lte: parseInt(maxPrice) } }),
+      ...(minPrice  && { priceAmount: { gte: parseInt(minPrice) } }),
+      ...(brand     && { phoneModel: { brand: { contains: brand, mode: 'insensitive' } } }),
+    },
+    include: { images: { where: { isPrimary: true }, take: 1 }, phoneModel: true, seller: { select: { id: true, fullName: true, trustScore: true, wilaya: true } } },
+    orderBy: { publishedAt: 'desc' },
+    skip: (parseInt(page) - 1) * PAGE_SIZE,
+    take: PAGE_SIZE,
+  })
+  res.json(listings)
+})
+
+// POST /listings
+listingsRouter.post('/', authMiddleware, async (req: Request, res: Response) => {
+  const { phoneModelId, condition, priceAmount, storageGb, ramGb, colorName,
+          wilaya, canShip, description, imageUrls } = req.body
+  const sellerId = (req as any).userId
+
+  const listing = await prisma.$transaction(async (tx) => {
+    const l = await tx.listing.create({
+      data: { sellerId, phoneModelId, title: '', condition, priceAmount,
+               storageGb, ramGb, colorName, wilaya, canShip, description,
+               status: 'DRAFT' },
+    })
+    if (imageUrls?.length) {
+      await tx.listingImage.createMany({
+        data: imageUrls.map((url: string, i: number) => ({
+          listingId: l.id, url, isPrimary: i === 0,
+        })),
+      })
+    }
+    return l
+  })
+
+  // Run AI fraud scan in background (non-blocking)
+  scanListingImages(listing.id).then(async (score) => {
+    if (score < 0.3) {
+      await prisma.listing.update({ where: { id: listing.id },
+        data: { status: 'ACTIVE', publishedAt: new Date() } })
+    }
+  }).catch(console.error)
+
+  res.status(201).json(listing)
+})
+
+// ─────────────────────────────────────────────────────────────
+// 8. ORDERS
+// ─────────────────────────────────────────────────────────────
+
+// routes/orders.routes.ts
+const ordersRouter = Router()
+
+// POST /orders
+ordersRouter.post('/', authMiddleware, async (req: Request, res: Response) => {
+  const buyerId = (req as any).userId
+  const { listingId, paymentMethod } = req.body
+
+  const listing = await prisma.listing.findUniqueOrThrow({
+    where: { id: listingId, status: 'ACTIVE' },
+  })
+
+  if (listing.sellerId === buyerId)
+    return res.status(400).json({ error: 'cannot buy own listing' })
+
+  const PLATFORM_FEE_RATE = 0.03 // 3%
+  const platformFee = Math.round(listing.priceAmount * PLATFORM_FEE_RATE)
+
+  const order = await prisma.order.create({
+    data: {
+      buyerId, sellerId: listing.sellerId, listingId,
+      amountPaid: listing.priceAmount, currency: listing.priceCurrency,
+      platformFee, status: 'PENDING',
+    },
+  })
+
+  // Initiate payment
+  const paymentResult = await createPayment(order.id, paymentMethod)
+
+  res.status(201).json({ order, payment: paymentResult })
+})
+
+// PATCH /orders/:id/confirm-delivery
+ordersRouter.patch('/:id/confirm-delivery', authMiddleware, async (req: Request, res: Response) => {
+  const buyerId = (req as any).userId
+  const order = await prisma.order.findFirst({
+    where: { id: req.params.id, buyerId, status: 'SHIPPED' },
+  })
+  if (!order) return res.status(404).json({ error: 'order not found' })
+
+  await prisma.order.update({
+    where: { id: order.id },
+    data: { status: 'DELIVERED', deliveredAt: new Date(), escrowReleasedAt: new Date() },
+  })
+
+  // Recalculate seller trust after delivery
+  await recalcTrustScore(order.sellerId)
+
+  res.json({ message: 'delivery confirmed, funds released' })
+})
+
+// ─────────────────────────────────────────────────────────────
+// 9. PAYMENT SERVICE  (Stripe + Chargily)
+// ─────────────────────────────────────────────────────────────
+
+// services/payment.service.ts
+import Stripe from 'stripe'
+const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!)
+
+export async function createPayment(orderId: string, method: string) {
+  const order = await prisma.order.findUniqueOrThrow({ where: { id: orderId } })
+
+  if (method === 'STRIPE') {
+    const intent = await stripe.paymentIntents.create({
+      amount: order.amountPaid,
+      currency: 'usd',
+      metadata: { orderId },
+    })
+    await prisma.payment.create({
+      data: { orderId, method: 'STRIPE', status: 'PENDING',
+               amountRequested: order.amountPaid, currency: 'USD',
+               stripePaymentIntentId: intent.id },
+    })
+    return { clientSecret: intent.client_secret }
+  }
+
+  // Chargily: CIB or Gold card (DZ)
+  const chargilyMethod = method === 'CHARGILY_CIB' ? 'cib' : 'edahabia'
+  const res = await fetch('https://pay.chargily.net/api/v2/checkouts', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${process.env.CHARGILY_SECRET_KEY}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      amount: order.amountPaid / 100,
+      currency: 'dzd',
+      payment_method: chargilyMethod,
+      success_url: `${process.env.APP_URL}/orders/${orderId}/success`,
+      failure_url: `${process.env.APP_URL}/orders/${orderId}/failed`,
+      metadata: { orderId },
+    }),
+  })
+  const checkout = await res.json()
+  await prisma.payment.create({
+    data: { orderId, method: method as any, status: 'PENDING',
+             amountRequested: order.amountPaid, currency: 'DZD',
+             chargilyCheckoutId: checkout.id },
+  })
+  return { redirectUrl: checkout.checkout_url }
+}
+
+// Webhook handler (both gateways)
+export async function handleWebhook(provider: 'stripe' | 'chargily', payload: any) {
+  let orderId: string
+  if (provider === 'stripe') {
+    if (payload.type !== 'payment_intent.succeeded') return
+    orderId = payload.data.object.metadata.orderId
+  } else {
+    if (payload.status !== 'paid') return
+    orderId = payload.metadata.orderId
+  }
+  await prisma.$transaction([
+    prisma.order.update({ where: { id: orderId }, data: { status: 'IN_ESCROW' } }),
+    prisma.payment.updateMany({ where: { orderId }, data: { status: 'CAPTURED', capturedAt: new Date() } }),
+  ])
+}
+
+// ─────────────────────────────────────────────────────────────
+// 10. AI TRUST SERVICE  (Claude Vision + Seller scoring)
+// ─────────────────────────────────────────────────────────────
+
+// services/trust.service.ts
+import Anthropic from '@anthropic-ai/sdk'
+const ai = new Anthropic()
+
+export async function scanListingImages(listingId: string): Promise<number> {
+  const images = await prisma.listingImage.findMany({ where: { listingId } })
+  if (!images.length) return 0
+
+  const scores = await Promise.all(images.map(async (img) => {
+    const resp = await ai.messages.create({
+      model: 'claude-opus-4-5',
+      max_tokens: 512,
+      messages: [{
+        role: 'user',
+        content: [
+          { type: 'image', source: { type: 'url', url: img.url } },
+          { type: 'text', text: `Analyze this phone listing image. Return ONLY valid JSON:
+{"fraudScore":0.0-1.0,"flags":[],"damageDetected":false,"isStockPhoto":false,"summary":""}
+Flags: stolen_photo | watermark | heavy_damage | mismatched_model | poor_quality` },
+        ],
+      }],
+    })
+    const json = JSON.parse((resp.content[0] as any).text)
+    await prisma.listingImage.update({ where: { id: img.id }, data: { aiTagsJson: json } })
+    return json.fraudScore as number
+  }))
+
+  const avg = scores.reduce((a, b) => a + b, 0) / scores.length
+  await prisma.listing.update({
+    where: { id: listingId },
+    data: { aiFraudScore: avg, aiVerified: avg < 0.3,
+            status: avg > 0.7 ? 'UNDER_REVIEW' : 'ACTIVE' },
+  })
+  return avg
+}
+
+export async function recalcTrustScore(userId: string): Promise<number> {
+  const [reviews, orders, user] = await Promise.all([
+    prisma.review.findMany({ where: { revieweeId: userId }, select: { rating: true } }),
+    prisma.order.findMany({ where: { sellerId: userId }, select: { status: true } }),
+    prisma.user.findUniqueOrThrow({ where: { id: userId } }),
+  ])
+  const avgRating = reviews.length ? reviews.reduce((s, r) => s + r.rating, 0) / reviews.length : 3
+  const total = orders.length || 1
+  const delivered = orders.filter(o => o.status === 'DELIVERED').length
+  const disputed  = orders.filter(o => o.status === 'DISPUTED').length
+
+  const score = Math.min(100, Math.round(
+    (avgRating / 5) * 40 +
+    (delivered / total) * 30 +
+    (user.isIdVerified ? 20 : 0) +
+    Math.max(0, 10 - disputed * 5)
+  ))
+
+  await prisma.user.update({ where: { id: userId }, data: { trustScore: score } })
+  return score
+}
+
+// ─────────────────────────────────────────────────────────────
+// 11. REAL-TIME CHAT  (Socket.io + Redis adapter)
+// ─────────────────────────────────────────────────────────────
+
+// gateways/chat.gateway.ts
+import { Server, Socket } from 'socket.io'
+import { createAdapter } from '@socket.io/redis-adapter'
+import { createClient } from 'redis'
+
+export async function initChatGateway(httpServer: any) {
+  const pub = createClient({ url: process.env.REDIS_URL })
+  const sub = pub.duplicate()
+  await Promise.all([pub.connect(), sub.connect()])
+
+  const io = new Server(httpServer, {
+    cors: { origin: process.env.ALLOWED_ORIGINS?.split(',') },
+    adapter: createAdapter(pub, sub),
+  })
+
+  io.use((socket, next) => {
+    const payload = verifyJWT(socket.handshake.auth.token)
+    if (!payload) return next(new Error('UNAUTHORIZED'))
+    socket.data.userId = payload.sub
+    next()
+  })
+
+  io.on('connection', (socket: Socket) => {
+    const userId = socket.data.userId as string
+    socket.join(`user:${userId}`)
+
+    socket.on('join_thread', async ({ threadId }: { threadId: string }) => {
+      const thread = await prisma.chatThread.findFirst({
+        where: { id: threadId, OR: [{ buyerId: userId }, { sellerId: userId }] },
+      })
+      if (!thread) return socket.emit('error', { code: 'FORBIDDEN' })
+      socket.join(`thread:${threadId}`)
+    })
+
+    socket.on('send_message', async (data: { threadId: string; body: string; mediaUrl?: string }) => {
+      const thread = await prisma.chatThread.findFirst({
+        where: { id: data.threadId, OR: [{ buyerId: userId }, { sellerId: userId }] },
+      })
+      if (!thread) return socket.emit('error', { code: 'FORBIDDEN' })
+
+      const receiverId = thread.buyerId === userId ? thread.sellerId : thread.buyerId
+
+      const msg = await prisma.message.create({
+        data: { threadId: data.threadId, senderId: userId, receiverId,
+                 body: data.body, mediaUrl: data.mediaUrl },
+      })
+      await prisma.chatThread.update({ where: { id: data.threadId }, data: { lastMsgAt: new Date() } })
+
+      // Fan-out via Redis adapter (works across all nodes)
+      io.to(`thread:${data.threadId}`).emit('new_message', {
+        id: msg.id, threadId: msg.threadId, senderId: msg.senderId,
+        body: msg.body, sentAt: msg.sentAt,
+      })
+
+      // Notify if offline
+      const online = await io.in(`user:${receiverId}`).fetchSockets()
+      if (!online.length) await sendPushAndWhatsApp(receiverId, msg.body, data.threadId)
+    })
+
+    socket.on('mark_read', async ({ threadId }: { threadId: string }) => {
+      await prisma.message.updateMany({
+        where: { threadId, receiverId: userId, readAt: null },
+        data: { readAt: new Date(), status: 'READ' },
+      })
+      socket.to(`thread:${threadId}`).emit('messages_read', { threadId, readBy: userId })
+    })
+
+    socket.on('typing',      ({ threadId }: any) => socket.to(`thread:${threadId}`).emit('user_typing', { userId }))
+    socket.on('stop_typing', ({ threadId }: any) => socket.to(`thread:${threadId}`).emit('user_stopped_typing', { userId }))
+  })
+
+  return io
+}
+
+// ─────────────────────────────────────────────────────────────
+// 12. NOTIFICATIONS  (FCM + WhatsApp)
+// ─────────────────────────────────────────────────────────────
+
+// services/notification.service.ts
+export async function sendPushAndWhatsApp(userId: string, body: string, threadId: string) {
+  const user = await prisma.user.findUnique({ where: { id: userId } })
+  if (!user) return
+
+  // FCM push (via Firebase Admin SDK)
+  // await firebaseAdmin.messaging().send({ token: user.fcmToken, notification: { title: 'رسالة جديدة', body } })
+
+  // WhatsApp via WhatsApp Business API
+  if (user.phone) {
+    await fetch(`https://graph.facebook.com/v18.0/${process.env.WA_PHONE_ID}/messages`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${process.env.WA_ACCESS_TOKEN}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        messaging_product: 'whatsapp',
+        to: user.phone,
+        type: 'template',
+        template: { name: 'new_message', language: { code: 'ar' },
+                    components: [{ type: 'body', parameters: [{ type: 'text', text: body.slice(0, 100) }] }] },
+      }),
+    })
+  }
+
+  await prisma.notification.create({
+    data: { userId, type: 'NEW_MESSAGE', title: 'رسالة جديدة', body,
+             dataJson: { threadId }, sentVia: ['push', 'whatsapp'] },
+  })
+}
+
+// ─────────────────────────────────────────────────────────────
+// 13. MIDDLEWARE
+// ─────────────────────────────────────────────────────────────
+
+// middleware/auth.middleware.ts
+import { Request, Response, NextFunction } from 'express'
+
+export function authMiddleware(req: Request, res: Response, next: NextFunction) {
+  const token = req.headers.authorization?.replace('Bearer ', '')
+  if (!token) return res.status(401).json({ error: 'no token' })
+  const payload = verifyJWT(token)
+  if (!payload) return res.status(401).json({ error: 'invalid token' });
+  (req as any).userId = payload.sub
+  next()
+}
+
+// ─────────────────────────────────────────────────────────────
+// 14. SERVER ENTRY POINT
+// ─────────────────────────────────────────────────────────────
+
+// server.ts
+import express from 'express'
+import http from 'http'
+import cors from 'cors'
+
+const app = express()
+const httpServer = http.createServer(app)
+
+app.use(cors({ origin: process.env.ALLOWED_ORIGINS?.split(',') }))
+app.use(express.json())
+
+// Routes
+app.use('/auth',     authRouter)
+app.use('/catalog',  catalogRouter)
+app.use('/listings', listingsRouter)
+app.use('/orders',   ordersRouter)
+
+// Webhooks (raw body needed for Stripe signature)
+app.post('/webhooks/stripe', express.raw({ type: 'application/json' }), async (req, res) => {
+  const sig = req.headers['stripe-signature'] as string
+  const event = stripe.webhooks.constructEvent(req.body, sig, process.env.STRIPE_WEBHOOK_SECRET!)
+  await handleWebhook('stripe', event)
+  res.json({ received: true })
+})
+
+app.post('/webhooks/chargily', async (req, res) => {
+  await handleWebhook('chargily', req.body)
+  res.json({ received: true })
+})
+
+// Init Socket.io
+initChatGateway(httpServer)
+
+const PORT = process.env.PORT ?? 4000
+httpServer.listen(PORT, () => console.log(`Server running on :${PORT}`))
+
+// ─────────────────────────────────────────────────────────────
+// 15. MOBILE ROADMAP  (React Native / Expo)
+// ─────────────────────────────────────────────────────────────
+
+/*
+MONOREPO STRUCTURE (Turborepo):
+  apps/web/          ← Next.js 14 (App Router)
+  apps/mobile/       ← Expo + React Native
+  packages/ui/       ← Tamagui shared components
+  packages/api/      ← React Query hooks (shared web+mobile)
+  packages/types/    ← Prisma-generated types
+
+SHARED CODE ~60%:
+  - All API calls (React Query hooks)
+  - Business logic (validation, formatting)
+  - TypeScript types
+
+PHASE 1 (Month 1-2): Auth OTP + Browse listings + Listing detail
+PHASE 2 (Month 3-4): Chat (same Socket.io server) + Push notifications + Create listing
+PHASE 3 (Month 5-6): Offline cache (MMKV) + Biometric login + Location filter (Wilaya)
+PHASE 4 (Month 7):   App Store + Play Store via EAS Submit + OTA updates (Expo Updates)
+
+KEY CHOICES:
+  Navigation  → Expo Router v3   (mirrors Next.js file-based routing)
+  Styling     → Tamagui          (shared design tokens with web)
+  State       → Zustand + React Query
+  Storage     → MMKV             (10× faster than AsyncStorage)
+  Images      → Expo Image       (built-in cache + blurhash)
+*/
